@@ -145,6 +145,8 @@ class DecoupledBPUWithBTB : public BPredUnit
 
     unsigned numOverrideBubbles{0};
 
+    bool enableTwoTaken{true};
+
     bool validateFSQEnqueue();
 
     void processNewPrediction();
