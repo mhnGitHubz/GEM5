@@ -143,6 +143,9 @@ class DecoupledBPUWithBTB : public BPredUnit
     unsigned resolveDequeueFailCounter{0};
     const unsigned resolveBlockThreshold;
 
+    const bool enable2Fetch;
+    const unsigned maxFetchBytesPerCycle;
+
     unsigned numOverrideBubbles{0};
 
     bool enableTwoTaken{true};
@@ -208,6 +211,13 @@ class DecoupledBPUWithBTB : public BPredUnit
 
     FetchTarget&
     getTarget(FetchTargetId id)
+    {
+        assert(hasTarget(id));
+        return fetchTargetQueue[id - fetchTargetBaseId];
+    }
+
+    const FetchTarget&
+    getTarget(FetchTargetId id) const
     {
         assert(hasTarget(id));
         return fetchTargetQueue[id - fetchTargetBaseId];
@@ -454,6 +464,12 @@ class DecoupledBPUWithBTB : public BPredUnit
     bool ftqHasHead() const { return hasTarget(fetchHeadFtqId); }
     FetchTargetId ftqHeadId() const { assert(ftqHasHead()); return fetchHeadFtqId; }
     const FetchTarget &ftqHead() { assert(ftqHasHead()); return getTarget(fetchHeadFtqId); }
+
+    bool ftqHasNext() const { return hasTarget(fetchHeadFtqId + 1); }
+    const FetchTarget &ftqNext() const { assert(ftqHasNext()); return getTarget(fetchHeadFtqId + 1); }
+
+    bool is2FetchEnabled() const { return enable2Fetch; }
+    unsigned getMaxFetchBytesPerCycle() const { return maxFetchBytesPerCycle; }
 
     void dumpFsq(const char *when);
 
