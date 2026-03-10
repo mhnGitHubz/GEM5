@@ -134,51 +134,67 @@ DecoupledBPUWithBTB::tick()
         return;
     }
 
-    int predsRemainsToBeMade = enableTwoTaken ? 2 : 1;
-    unsigned tempNumOverrideBubbles = 0;
+    bool firstPredEnqueued = false;
+    bool firstPredTaken = false;
 
-    while (predsRemainsToBeMade > 0) {
-        // 1. Request new prediction if FSQ not full and we are idle
-        if (bpuState == BpuState::IDLE && !targetQueueFull()) {
-            if (blockPredictionPending) {
-                DPRINTF(Override, "Prediction blocked to prioritize resolve update\n");
-                dbpBtbStats.predictionBlockedForUpdate++;
-                blockPredictionPending = false;
-            } else {
-                requestNewPrediction();
-                bpuState = BpuState::PREDICTOR_DONE;
-            }
+    // 1. First block: keep full multi-stage prediction flow.
+    if (bpuState == BpuState::IDLE && !targetQueueFull()) {
+        if (blockPredictionPending) {
+            DPRINTF(Override, "Prediction blocked to prioritize resolve update\n");
+            dbpBtbStats.predictionBlockedForUpdate++;
+            blockPredictionPending = false;
+        } else {
+            requestNewPrediction();
+            bpuState = BpuState::PREDICTOR_DONE;
         }
+    }
 
-        // 2. Handle pending prediction if available
-        if (bpuState == BpuState::PREDICTOR_DONE) {
-            DPRINTF(Override, "Generating final prediction for PC %#lx\n", s0PC);
-            numOverrideBubbles = generateFinalPredAndCreateBubbles();
+    if (bpuState == BpuState::PREDICTOR_DONE) {
+        DPRINTF(Override, "Generating final prediction for PC %#lx\n", s0PC);
+        numOverrideBubbles = generateFinalPredAndCreateBubbles();
+        bpuState = BpuState::PREDICTION_OUTSTANDING;
+
+        for (int i = 0; i < numStages; i++) {
+            predsOfEachStage[i].btbEntries.clear();
+        }
+    }
+
+    if (bpuState == BpuState::PREDICTION_OUTSTANDING && numOverrideBubbles > 0) {
+        tage->dryRunCycle(s0PC);
+    }
+
+    if (validateFSQEnqueue()) {
+        firstPredTaken = finalPred.isTaken();
+        processNewPrediction();
+        firstPredEnqueued = true;
+
+        DPRINTF(Override, "FSQ entry enqueued, prediction state reset\n");
+        bpuState = BpuState::IDLE;
+    }
+
+    // 2. Second block: use target PC and only trust uBTB result.
+    if (enableTwoTaken && firstPredEnqueued && firstPredTaken &&
+        bpuState == BpuState::IDLE && !targetQueueFull()) {
+        requestNewPrediction();
+
+        const auto &ubtbPred = predsOfEachStage[0];
+        if (shouldGenerateSecondFromUBTB(ubtbPred)) {
+            finalPred = buildSecondPredFromUBTB(ubtbPred);
+            numOverrideBubbles = 0;
             bpuState = BpuState::PREDICTION_OUTSTANDING;
 
-            // Clear each predictor's output
-            for (int i = 0; i < numStages; i++) {
-                predsOfEachStage[i].btbEntries.clear();
+            if (validateFSQEnqueue()) {
+                processNewPrediction();
+                DPRINTF(Override,
+                        "Second FSQ entry enqueued with uBTB-only prediction\n");
             }
-        }
-
-        if (bpuState == BpuState::PREDICTION_OUTSTANDING && numOverrideBubbles > 0) {
-            tage->dryRunCycle(s0PC);
-        }
-
-        // check if:
-        // 1. FSQ has space
-        // 2. there's no bubble
-        // 3. PREDICTION_OUTSTANDING
-        if (validateFSQEnqueue()) {
-            // Create new FSQ entry with the current prediction
-            processNewPrediction();
-
-            DPRINTF(Override, "FSQ entry enqueued, prediction state reset\n");
             bpuState = BpuState::IDLE;
+        } else {
+            DPRINTF(Override,
+                    "Skip second prediction due to conditional/invalid uBTB result\n");
         }
 
-        predsRemainsToBeMade--;
+        clearPreds();
     }
 
     // Decrement override bubbles counter
@@ -190,6 +206,45 @@ DecoupledBPUWithBTB::tick()
 
     DPRINTF(Override, "Prediction cycle complete\n");
 
+}
+
+bool
+DecoupledBPUWithBTB::shouldGenerateSecondFromUBTB(
+    const FullBTBPrediction &ubtbPred) const
+{
+    auto pred = ubtbPred;
+    const auto takenEntry = pred.getTakenEntry();
+    if (!takenEntry.valid || takenEntry.isCond) {
+        return false;
+    }
+
+    // Guard against history pollution: no conditional branch is allowed
+    // before the terminating taken branch in the second block.
+    for (const auto &entry : ubtbPred.btbEntries) {
+        if (!entry.valid) {
+            continue;
+        }
+        if (entry.pc == takenEntry.pc) {
+            break;
+        }
+        if (entry.isCond) {
+            return false;
+        }
+    }
+    return true;
+}
+
+FullBTBPrediction
+DecoupledBPUWithBTB::buildSecondPredFromUBTB(
+    const FullBTBPrediction &ubtbPred) const
+{
+    FullBTBPrediction pred = ubtbPred;
+    pred.predSource = 0;
+    pred.overrideReason = OverrideReason::NO_OVERRIDE;
+    pred.predTick = curTick();
+    pred.s1Source = ubtb->getComponentIdx();
+    pred.s3Source = ubtb->getComponentIdx();
+    return pred;
 }
 
 /**

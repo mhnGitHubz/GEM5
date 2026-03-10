@@ -163,6 +163,8 @@ class DecoupledBPUWithBTB : public BPredUnit
 
     // Tick helper functions
     void requestNewPrediction();
+    bool shouldGenerateSecondFromUBTB(const FullBTBPrediction &ubtbPred) const;
+    FullBTBPrediction buildSecondPredFromUBTB(const FullBTBPrediction &ubtbPred) const;
 
     // TODO: compare phr and ghr
     void histShiftIn(int shamt, bool taken, boost::dynamic_bitset<> &history);
