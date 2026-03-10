@@ -218,14 +218,11 @@ DecoupledBPUWithBTB::shouldGenerateSecondFromUBTB(
         return false;
     }
 
-    // Guard against history pollution: no conditional branch is allowed
-    // before the terminating taken branch in the second block.
+    // Guard against history pollution: second block should not contain any
+    // conditional branch when second-direction prediction is disabled.
     for (const auto &entry : ubtbPred.btbEntries) {
         if (!entry.valid) {
             continue;
-        }
-        if (entry.pc == takenEntry.pc) {
-            break;
         }
         if (entry.isCond) {
             return false;
