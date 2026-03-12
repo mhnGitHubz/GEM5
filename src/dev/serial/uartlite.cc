@@ -27,12 +27,9 @@ Tick UartLite::write(PacketPtr pkt)
     auto offset = pkt->getAddr() - pioAddr;
     assert(pkt->getSize() == 1);
 
-    Tick delay = pioDelay;
-
     switch (offset) {
         case UARTLITE_TX_FIFO:
             putc(pkt->getRaw<uint8_t>(), stdout);
-            delay = txPioDelay;
             break;
         default:
             warn("Write to other uartlite addr %i is not implemented\n",
@@ -40,12 +37,11 @@ Tick UartLite::write(PacketPtr pkt)
     }
 
     pkt->makeAtomicResponse();
-    return delay;
+    return pioDelay;
 }
 
 UartLite::UartLite(const UartLiteParams *params)
-    : BasicPioDevice(*params, params->pio_size),
-      txPioDelay(params->tx_pio_latency)
+    : BasicPioDevice(*params, params->pio_size)
 {
 }
 
