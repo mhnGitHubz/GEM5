@@ -88,3 +88,4 @@ class UartLite(BasicPioDevice):
     cxx_class = 'gem5::UartLite'
     pio_addr = 0x40600000
     pio_size = Param.Addr(0xd, "Size of address range")
+    tx_pio_latency = Param.Latency('1ns', "Latency for UART TX FIFO writes")

@@ -14,6 +14,9 @@ namespace gem5
 {
 class UartLite : public BasicPioDevice
 {
+  private:
+    Tick txPioDelay;
+
   public:
     Tick read(PacketPtr pkt) override;
     Tick write(PacketPtr pkt) override;
