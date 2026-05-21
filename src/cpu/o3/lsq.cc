@@ -245,6 +245,7 @@ LSQ::StoreBuffer::setData(std::vector<StoreBufferEntry *> &data_vec)
     this->data_vec = data_vec;
     int way = data_vec.size();
     _size = 0;
+    max_size = way;
     lru_index.set_capacity(way);
     free_list.set_capacity(way);
     crossRef.resize(way);
@@ -255,10 +256,24 @@ LSQ::StoreBuffer::setData(std::vector<StoreBufferEntry *> &data_vec)
     }
 }
 
+void
+LSQ::StoreBuffer::setMaxThread(ThreadID _max_thread)
+{
+    max_thread = _max_thread;
+    vld_cnt_vec.resize(max_thread, 0);
+}
+
 bool
 LSQ::StoreBuffer::full() const
 {
     return free_list.size() == 0;
+}
+
+bool
+LSQ::StoreBuffer::full(ThreadID tid) const
+{
+    assert(vld_cnt_vec[tid] <= max_size);
+    return (vld_cnt_vec[tid] == (max_size - max_thread + 1));
 }
 
 uint64_t
@@ -326,6 +341,8 @@ LSQ::StoreBuffer::insert(StoreBufferEntry *entry)
     assert(!data_vld[index]);
     assert(!lru_index.full());
     _size++;
+    vld_cnt_vec[tid]++;
+    assert(vld_cnt_vec[tid] <= max_size);
     auto [it, _] = data_map.insert({hashKey(tid, addr), data_vec[index]});
     crossRef[index] = it;
     data_vld[index] = true;
@@ -376,7 +393,6 @@ LSQ::StoreBuffer::getEvict(const bool *eligible_tids,
     if (eligible_tids == nullptr && eligible_seq == nullptr) {
         return getEvict();
     }
-
     for (auto it = lru_index.rbegin(); it != lru_index.rend(); ++it) {
         auto *entry = data_vec[*it];
         if (!entry) {
@@ -411,6 +427,9 @@ LSQ::StoreBuffer::createVice(StoreBufferEntry *entry)
     assert(!entry->vice);
     entry->vice = vice;
     data_vld[vice->index] = true;
+    assert(entry->tid < max_thread);
+    vld_cnt_vec[entry->tid]++;
+    assert(vld_cnt_vec[entry->tid] <= max_size);
     // do not insert map and lru_index
     return vice;
 }
@@ -420,6 +439,8 @@ LSQ::StoreBuffer::release(StoreBufferEntry *entry)
 {
     assert(_size > 0);
     _size--;
+    vld_cnt_vec[entry->tid]--;
+    assert(vld_cnt_vec[entry->tid] >= 0);
     int index = entry->index;
     data_vld[index] = false;
     data_map.erase(crossRef[index]);
@@ -508,8 +529,7 @@ LSQ::LSQ(CPU *cpu_ptr, IEW *iew_ptr, const BaseO3CPUParams &params)
                  smtLSQThreshold == 0,
                  "SMT LSQ threshold must be non-zero in shared threshold mode");
 
-        if (lsqPolicy == SMTQueuePolicy::Dynamic ||
-            lsqPolicy == SMTQueuePolicy::DynamicBorrowing) {
+        if (lsqPolicy == SMTQueuePolicy::Dynamic) {
             DPRINTF(LSQ, "LSQ mode set to Shared/Dynamic: %u LQ and %u SQ "
                     "entries are shared across active SMT threads, along "
                     "with %u RARQ and %u RAWQ entries\n",
@@ -521,7 +541,7 @@ LSQ::LSQ(CPU *cpu_ptr, IEW *iew_ptr, const BaseO3CPUParams &params)
                     smtLSQThreshold);
         } else {
             panic("Invalid LSQ sharing policy. Options are: Dynamic, "
-                        "Partitioned, Threshold, DynamicBorrowing");
+                        "Partitioned, Threshold");
         }
     } else {
         panic("Invalid SMT LSQ mode. Options are: Independent, Shared");
@@ -544,7 +564,7 @@ LSQ::LSQ(CPU *cpu_ptr, IEW *iew_ptr, const BaseO3CPUParams &params)
         store_buffer_entries.push_back(new StoreBufferEntry(cpu->cacheLineSize(), i));
     }
     storeBuffer.setData(store_buffer_entries);
-
+    storeBuffer.setMaxThread(numThreads);
     bankOccupied.resize(dcacheSetDivNum, std::vector<bool>(numBank, false));
     pendingDcacheRefill.resize(dcacheSetDivNum, false);
     dcacheRefillDataRead.resize(dcacheSetDivNum, 0);
@@ -626,6 +646,7 @@ LSQ::takeOverFrom()
 void
 LSQ::tick()
 {
+
     // Re-issue loads which got blocked on the per-cycle load ports limit.
     if (usedLoadPorts == cacheLoadPorts && !_cacheBlocked)
         iewStage->cacheUnblocked();
@@ -639,6 +660,9 @@ LSQ::tick()
     while (threads != end) {
         ThreadID tid = *threads++;
         thread[tid].tick();
+        if(curTick()>7598958768)
+		int a = 0;
+        //dumpStoreBuffer(tid);
     }
 
 }
@@ -1525,7 +1549,6 @@ LSQ::sharedLSQAllocation(unsigned entries) const
 
     switch (lsqPolicy) {
       case SMTQueuePolicy::Dynamic:
-      case SMTQueuePolicy::DynamicBorrowing:
         return entries;
       case SMTQueuePolicy::Partitioned:
         return entries / active_threads;
@@ -1534,7 +1557,7 @@ LSQ::sharedLSQAllocation(unsigned entries) const
             std::min(entries, smtLSQThreshold);
       default:
         panic("Invalid LSQ sharing policy. Options are: Dynamic, "
-              "Partitioned, Threshold, DynamicBorrowing");
+              "Partitioned, Threshold");
     }
 }
 
@@ -1873,8 +1896,7 @@ LSQ::isStalled()
 bool
 LSQ::isStalled(ThreadID tid)
 {
-    if (lsqPolicy == SMTQueuePolicy::Dynamic ||
-        lsqPolicy == SMTQueuePolicy::DynamicBorrowing)
+    if (lsqPolicy == SMTQueuePolicy::Dynamic)
         return isStalled();
     else
         return thread[tid].isStalled();
